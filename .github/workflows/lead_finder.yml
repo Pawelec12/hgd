@@ -1,0 +1,55 @@
+name: ATS Lead Finder Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      role:
+        description: 'Target Job Role (e.g. Software Engineer, Data Entry Clerk)'
+        required: true
+        default: 'Software Engineer'
+      location:
+        description: 'Target Location (e.g. Chicago, Remote, or leave empty)'
+        required: false
+        default: ''
+      min_jobs:
+        description: 'Minimum Open Roles Per Company'
+        required: true
+        default: '2'
+
+  schedule:
+    # Run automatically every Monday at 8:00 AM UTC
+    - cron: '0 8 * * 1'
+
+jobs:
+  run-lead-finder:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute ATS Lead Finder
+        run: |
+          python main.py \
+            --role "${{ github.event.inputs.role || 'Software Engineer' }}" \
+            --location "${{ github.event.inputs.location || '' }}" \
+            --min-jobs ${{ github.event.inputs.min_jobs || 2 }} \
+            --output leads.csv
+
+      - name: Upload Lead CSV Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lead-results
+          path: |
+            leads.csv
+            leads.json

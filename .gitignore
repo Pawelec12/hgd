@@ -1,0 +1,18 @@
+# Output files
+*.csv
+*.json
+leads.csv
+test_results.csv
+
+# Python byte-compiled / cache / environment files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
