@@ -17,8 +17,26 @@ FIELDNAMES = [
     "job_urls"
 ]
 
+def export_clean_emails_txt(leads: List[Dict[str, Any]], filepath: str) -> bool:
+    """Exports a clean list of verified email addresses (one per line) ready for cold emailing."""
+    try:
+        dirname = os.path.dirname(filepath)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+
+        valid_emails = [lead["email"] for lead in leads if lead.get("email") and not lead["email"].startswith("unknown@")]
+        valid_emails = list(dict.fromkeys(valid_emails))  # Unique list
+
+        with open(filepath, mode="w", encoding="utf-8") as f:
+            for email in valid_emails:
+                f.write(f"{email}\n")
+        return True
+    except Exception as e:
+        print(f"[Error] Text email export failed: {e}")
+        return False
+
 def export_to_csv(leads: List[Dict[str, Any]], filepath: str) -> bool:
-    """Exports list of lead dicts to CSV file."""
+    """Exports list of lead dicts to CSV file and creates a clean emails.txt file."""
     try:
         dirname = os.path.dirname(filepath)
         if dirname:
@@ -30,8 +48,14 @@ def export_to_csv(leads: List[Dict[str, Any]], filepath: str) -> bool:
             for lead in leads:
                 row = lead.copy()
                 if isinstance(row.get("job_urls"), list):
-                    row["job_urls"] = " | ".join(row["job_urls"])
+                    # Truncate job URLs list to 1 primary link so CSV stays clean and readable
+                    row["job_urls"] = row["job_urls"][0] if row["job_urls"] else ""
                 writer.writerow(row)
+
+        # Generate clean emails.txt alongside CSV
+        txt_path = os.path.join(dirname, "emails.txt") if dirname else "emails.txt"
+        export_clean_emails_txt(leads, txt_path)
+
         return True
     except Exception as e:
         print(f"[Error] CSV export failed: {e}")

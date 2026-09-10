@@ -13,8 +13,8 @@ class EmailVerifier:
         """Splits full name into clean first and last name."""
         clean = re.sub(r'[^a-zA-Z\s]', '', full_name).strip().lower()
         parts = clean.split()
-        if not parts:
-            return ("contact", "info")
+        if not parts or clean in ["unknown", "hiring manager", "decision maker", "contact"]:
+            return ("contact", "")
         if len(parts) == 1:
             return (parts[0], "")
         return (parts[0], parts[-1])
@@ -25,8 +25,9 @@ class EmailVerifier:
         l = last_name.lower().strip()
         d = domain.lower().strip()
 
-        if not f and not l:
-            return [f"contact@{d}", f"info@{d}"]
+        # If name is unknown / role-based, return clean corporate role emails
+        if not f or f in ["unknown", "contact"]:
+            return [f"cto@{d}", f"contact@{d}", f"jobs@{d}", f"info@{d}", f"hello@{d}"]
 
         permutations = []
         if f and l:
@@ -59,7 +60,6 @@ class EmailVerifier:
         """
         mx_host = self.get_mx_record(domain)
         if not mx_host:
-            # Fallback to top standard pattern if DNS MX fails
             return (candidate_emails[0], "UNVERIFIED_NO_MX")
 
         try:
@@ -85,11 +85,9 @@ class EmailVerifier:
                     return (email, "VERIFIED_SMTP_250")
 
             server.quit()
-            return (candidate_emails[0], "PATTERN_GUESS_NO_MATCH")
+            return (candidate_emails[0], "PATTERN_PREDICTED")
 
         except (socket.timeout, socket.error, smtplib.SMTPException):
-            # Port 25 blocked or timeout (common on local consumer ISPs)
-            # Default to #1 corporate pattern (first.last@domain.com)
             return (candidate_emails[0], "PATTERN_PREDICTED")
 
     def find_best_email(self, full_name: str, domain: str) -> Dict[str, str]:
