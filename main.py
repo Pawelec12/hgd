@@ -47,6 +47,8 @@ def main():
 
     if not raw_hits:
         console.print("[bold red]No job listings found for the query. Try adjusting search parameters.[/bold red]")
+        export_to_csv([], args.output)
+        export_to_json([], args.output.rsplit(".", 1)[0] + ".json")
         sys.exit(0)
 
     # Step 2: Aggregate & Filter by min_jobs
@@ -55,6 +57,8 @@ def main():
 
     if not companies:
         console.print(f"[yellow]No companies met the threshold of hiring >= {args.min_jobs} roles simultaneously.[/yellow]")
+        export_to_csv([], args.output)
+        export_to_json([], args.output.rsplit(".", 1)[0] + ".json")
         sys.exit(0)
 
     # Step 3: Find Executives & Verify Emails

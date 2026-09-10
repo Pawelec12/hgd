@@ -14,7 +14,7 @@ on:
       min_jobs:
         description: 'Minimum Open Roles Per Company'
         required: true
-        default: '2'
+        default: '1'
 
   schedule:
     # Run automatically every Monday at 8:00 AM UTC
@@ -43,7 +43,7 @@ jobs:
           python main.py \
             --role "${{ github.event.inputs.role || 'Software Engineer' }}" \
             --location "${{ github.event.inputs.location || '' }}" \
-            --min-jobs ${{ github.event.inputs.min_jobs || 2 }} \
+            --min-jobs ${{ github.event.inputs.min_jobs || 1 }} \
             --output leads.csv
 
       - name: Upload Lead CSV Artifact

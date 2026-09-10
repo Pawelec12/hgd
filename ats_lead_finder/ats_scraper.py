@@ -1,6 +1,7 @@
 import re
 import urllib.parse
 import warnings
+import time
 from typing import Dict, List, Any
 import httpx
 from bs4 import BeautifulSoup
@@ -24,27 +25,54 @@ class ATSScraper:
 
     def search_ats_jobs(self, role: str, location: str = "") -> List[Dict[str, str]]:
         """
-        Executes Google/DuckDuckGo dorks for major ATS platforms targeting specific role and location.
-        Returns a list of raw job search hit dicts.
+        Executes search queries per ATS platform targeting specific role and location.
+        Falls back to combined query if per-domain searches are rate-limited.
         """
-        query_parts = []
-        site_dorks = " OR ".join([f"site:{domain}" for domain in ATS_DOMAINS.values()])
-        query = f'({site_dorks}) "{role}"'
-        if location:
-            query += f' "{location}"'
-
         results = []
-        try:
-            with DDGS() as ddgs:
-                ddg_results = ddgs.text(query, max_results=self.max_results)
-                for r in ddg_results:
-                    results.append({
-                        "title": r.get("title", ""),
-                        "href": r.get("href", ""),
-                        "body": r.get("body", "")
-                    })
-        except Exception as e:
-            print(f"[Warning] Search query issue: {e}")
+        seen_urls = set()
+        per_domain_limit = max(15, self.max_results // len(ATS_DOMAINS))
+
+        for platform, domain in ATS_DOMAINS.items():
+            query = f'site:{domain} "{role}"'
+            if location:
+                query += f' "{location}"'
+
+            try:
+                with DDGS() as ddgs:
+                    ddg_results = list(ddgs.text(query, max_results=per_domain_limit))
+                    for r in ddg_results:
+                        href = r.get("href", "")
+                        if href and href not in seen_urls:
+                            seen_urls.add(href)
+                            results.append({
+                                "title": r.get("title", ""),
+                                "href": href,
+                                "body": r.get("body", "")
+                            })
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"[Warning] Search query issue for {domain}: {e}")
+
+        # Fallback to combined query if empty
+        if not results:
+            site_dorks = " OR ".join([f"site:{domain}" for domain in ATS_DOMAINS.values()])
+            fallback_query = f'{site_dorks} "{role}"'
+            if location:
+                fallback_query += f' "{location}"'
+            try:
+                with DDGS() as ddgs:
+                    ddg_results = list(ddgs.text(fallback_query, max_results=self.max_results))
+                    for r in ddg_results:
+                        href = r.get("href", "")
+                        if href and href not in seen_urls:
+                            seen_urls.add(href)
+                            results.append({
+                                "title": r.get("title", ""),
+                                "href": href,
+                                "body": r.get("body", "")
+                            })
+            except Exception as e:
+                print(f"[Warning] Fallback search query issue: {e}")
 
         return results
 
@@ -52,26 +80,44 @@ class ATSScraper:
         """
         Extracts ATS platform and company slug from ATS job URL.
         Example: https://boards.greenhouse.io/stripe/jobs/123 -> ('greenhouse', 'stripe')
+        Example: https://boards.greenhouse.io/embed/job_board?for=stripe -> ('greenhouse', 'stripe')
         """
         parsed = urllib.parse.urlparse(url)
         netloc = parsed.netloc.lower()
         path_parts = [p for p in parsed.path.split('/') if p]
+        query_params = urllib.parse.parse_qs(parsed.query)
 
         platform = "unknown"
         company_slug = ""
 
-        if "greenhouse.io" in netloc and path_parts:
+        # Check query parameters (e.g. ?for=stripe or ?token=stripe)
+        for param in ["for", "token", "for_company", "c"]:
+            if param in query_params and query_params[param]:
+                company_slug = query_params[param][0]
+                break
+
+        if "greenhouse.io" in netloc:
             platform = "greenhouse"
-            company_slug = path_parts[0]
-        elif "lever.co" in netloc and path_parts:
+            if not company_slug and path_parts:
+                if path_parts[0] not in ["embed", "jobs", "careers", "api"]:
+                    company_slug = path_parts[0]
+                elif len(path_parts) > 1 and path_parts[1] not in ["job_board", "jobs"]:
+                    company_slug = path_parts[1]
+        elif "lever.co" in netloc:
             platform = "lever"
-            company_slug = path_parts[0]
-        elif "ashbyhq.com" in netloc and path_parts:
+            if not company_slug and path_parts:
+                company_slug = path_parts[0]
+        elif "ashbyhq.com" in netloc:
             platform = "ashby"
-            company_slug = path_parts[0]
-        elif "workable.com" in netloc and path_parts:
+            if not company_slug and path_parts:
+                company_slug = path_parts[0]
+        elif "workable.com" in netloc:
             platform = "workable"
-            company_slug = path_parts[0]
+            if not company_slug and path_parts:
+                company_slug = path_parts[0]
+
+        # Clean slug
+        company_slug = company_slug.strip().lower()
 
         return {
             "platform": platform,
