@@ -3,7 +3,10 @@ import warnings
 from typing import Dict, Optional, List
 
 warnings.filterwarnings("ignore")
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 DEFAULT_TITLES = ["CTO", "Chief Technology Officer", "VP of Engineering", "VP of Technology", "Head of Engineering"]
 

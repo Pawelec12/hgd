@@ -7,7 +7,10 @@ import httpx
 from bs4 import BeautifulSoup
 
 warnings.filterwarnings("ignore")
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 ATS_DOMAINS = {
     "greenhouse": "boards.greenhouse.io",
