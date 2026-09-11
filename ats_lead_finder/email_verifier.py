@@ -3,6 +3,7 @@ import re
 import warnings
 import os
 import httpx
+import unidecode
 from typing import List, Dict, Optional, Tuple
 from bs4 import BeautifulSoup
 
@@ -46,14 +47,17 @@ class EmailVerifier:
         self.apollo_api_key = os.environ.get("APOLLO_API_KEY")
 
     def split_name(self, full_name: str) -> Tuple[str, str]:
-        """Splits full name into clean first and last name."""
-        clean = re.sub(r'[^a-zA-Z\s]', '', full_name).strip().lower()
+        """Splits full name into clean first and last name using unidecode for international chars."""
+        # Transliterate (e.g., Łukasz -> Lukasz, José -> Jose)
+        clean = unidecode.unidecode(full_name).strip().lower()
+        # Remove non-alpha (O'Brien -> obrien, Smith-Jones -> smithjones)
+        clean = re.sub(r'[^a-z\s]', '', clean)
         parts = clean.split()
         if not parts or clean in ["unknown", "hiring manager", "decision maker", "contact"]:
             return ("contact", "")
         if len(parts) == 1:
             return (parts[0], "")
-        return (parts[0], parts[-1])
+        return (parts[0], "".join(parts[1:])) # handles double surnames by concating them
 
     def search_apollo_api(self, first_name: str, last_name: str, domain: str) -> Optional[str]:
         """Uses Apollo.io Free API if available to get 100% accurate emails."""
@@ -122,16 +126,20 @@ class EmailVerifier:
             f"https://www.{domain}/team",
             f"https://www.{domain}/contact",
             f"https://www.{domain}/",
-            f"https://crt.sh/?q=%.{domain}&output=json"
+            f"https://crt.sh/?q=%.{domain}&output=json",
+            f"https://api.github.com/search/commits?q=author-email:@{domain}&per_page=10"
         ]
         
         email_regex = re.compile(r'([a-zA-Z0-9._%+-]+)@' + re.escape(domain), re.IGNORECASE)
         
         for url in urls_to_try:
             try:
-                r = httpx.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=self.timeout, follow_redirects=True)
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                if 'github.com' in url:
+                    headers['Accept'] = 'application/vnd.github.cloak-preview'
+                r = httpx.get(url, headers=headers, timeout=self.timeout, follow_redirects=True)
                 if r.status_code == 200:
-                    text = str(r.json()) if 'crt.sh' in url else r.text
+                    text = str(r.json()) if ('crt.sh' in url or 'github.com' in url) else r.text
                     matches = email_regex.findall(text)
                     for m in matches:
                         user_part = m.lower()
