@@ -1,8 +1,15 @@
 import socket
 import smtplib
 import re
+import warnings
 from typing import List, Dict, Optional, Tuple
 import dns.resolver
+
+warnings.filterwarnings("ignore")
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 class EmailVerifier:
     def __init__(self, sender_email: str = "verify@checkmail.org", timeout: int = 4):
@@ -19,8 +26,34 @@ class EmailVerifier:
             return (parts[0], "")
         return (parts[0], parts[-1])
 
-    def generate_permutations(self, first_name: str, last_name: str, domain: str) -> List[str]:
-        """Generates standard corporate email pattern permutations."""
+    def detect_domain_pattern(self, domain: str) -> Optional[str]:
+        """
+        Mines public SERPs to discover actual email patterns used by domain.
+        Example: If 'ashrivastava@ocrolus.com' or 'vsmith@ocrolus.com' is found in snippets,
+        pattern is 'flast'.
+        """
+        query = f'"@{domain}"'
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+                pattern_regex = re.compile(r'([a-zA-Z0-9._%+-]+)@' + re.escape(domain), re.IGNORECASE)
+                
+                for r in results:
+                    text = f"{r.get('title', '')} {r.get('body', '')}"
+                    matches = pattern_regex.findall(text)
+                    for m in matches:
+                        user_part = m.lower()
+                        if user_part not in ["info", "contact", "sales", "support", "jobs", "careers", "help", "admin"]:
+                            if "." in user_part:
+                                return "first.last"
+                            elif len(user_part) >= 4:
+                                return "flast"
+        except Exception:
+            pass
+        return None
+
+    def generate_permutations(self, first_name: str, last_name: str, domain: str, detected_pattern: Optional[str] = None) -> List[str]:
+        """Generates corporate email pattern permutations ordered by detected domain pattern."""
         f = first_name.lower().strip()
         l = last_name.lower().strip()
         d = domain.lower().strip()
@@ -29,16 +62,30 @@ class EmailVerifier:
         if not f or f in ["unknown", "contact"]:
             return [f"cto@{d}", f"contact@{d}", f"jobs@{d}", f"info@{d}", f"hello@{d}"]
 
+        pattern_map = {
+            "first.last": f"{f}.{l}@{d}",
+            "flast": f"{f[0]}{l}@{d}",
+            "first": f"{f}@{d}",
+            "first.l": f"{f}.{l[0]}@{d}",
+            "firstl": f"{f}{l[0]}@{d}",
+            "firstlast": f"{f}{l}@{d}"
+        }
+
         permutations = []
+
+        # If domain pattern was mined, prioritize it as Candidate #1!
+        if detected_pattern and detected_pattern in pattern_map:
+            permutations.append(pattern_map[detected_pattern])
+
         if f and l:
-            permutations.append(f"{f}.{l}@{d}")
-            permutations.append(f"{f}@{d}")
-            permutations.append(f"{f[0]}{l}@{d}")
-            permutations.append(f"{f}.{l[0]}@{d}")
-            permutations.append(f"{f}{l}@{d}")
-            permutations.append(f"{l}.{f}@{d}")
-            permutations.append(f"{f}_{l}@{d}")
-            permutations.append(f"{f}{l[0]}@{d}")
+            permutations.extend([
+                f"{f[0]}{l}@{d}",      # flast (e.g. ashrivastava@ocrolus.com)
+                f"{f}.{l}@{d}",      # first.last (e.g. ajay.shrivastava@ocrolus.com)
+                f"{f}@{d}",         # first
+                f"{f}.{l[0]}@{d}",    # first.l
+                f"{f}{l}@{d}",       # firstlast
+                f"{f}{l[0]}@{d}"     # firstl
+            ])
         elif f:
             permutations.append(f"{f}@{d}")
 
@@ -91,9 +138,10 @@ class EmailVerifier:
             return (candidate_emails[0], "PATTERN_PREDICTED")
 
     def find_best_email(self, full_name: str, domain: str) -> Dict[str, str]:
-        """Complete workflow: Name + Domain -> Verified Email & Status."""
+        """Complete workflow: Name + Domain -> Pattern Mining -> Verified Email & Status."""
         first, last = self.split_name(full_name)
-        candidates = self.generate_permutations(first, last, domain)
+        pattern = self.detect_domain_pattern(domain)
+        candidates = self.generate_permutations(first, last, domain, detected_pattern=pattern)
         best_email, status = self.verify_smtp(domain, candidates)
 
         return {

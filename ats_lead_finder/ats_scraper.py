@@ -127,6 +127,15 @@ class ATSScraper:
             "company_slug": company_slug
         }
 
+    def resolve_domain(self, slug: str) -> str:
+        """Derives clean corporate domain from slug."""
+        slug = slug.lower().strip()
+        tlds = ['.com', '.ai', '.io', '.co', '.org', '.net', '.app', '.dev', '.tech']
+        for tld in tlds:
+            if slug.endswith(tld):
+                return slug
+        return f"{slug}.com"
+
     def aggregate_companies(self, raw_results: List[Dict[str, str]], min_jobs: int = 2) -> List[Dict[str, Any]]:
         """
         Groups job hits by company slug, counts job listings, and filters by min_jobs.
@@ -146,11 +155,12 @@ class ATSScraper:
             if slug not in companies:
                 # Clean up slug into display company name
                 clean_name = slug.replace("-", " ").replace("_", " ").title()
+                domain = self.resolve_domain(slug)
                 companies[slug] = {
                     "company_slug": slug,
                     "company_name": clean_name,
                     "platform": platform,
-                    "domain": f"{slug}.com",  # Default guess, resolved in verifier if needed
+                    "domain": domain,
                     "job_urls": [],
                     "job_count": 0
                 }
