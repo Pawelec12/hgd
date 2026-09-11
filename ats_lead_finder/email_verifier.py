@@ -26,6 +26,41 @@ class EmailVerifier:
             return (parts[0], "")
         return (parts[0], parts[-1])
 
+    def search_executive_direct_email(self, first_name: str, last_name: str, domain: str) -> Optional[str]:
+        """
+        Executes targeted SERP queries to discover exact executive email mentions.
+        Example: "Jared Palmer" "cognition.ai" email -> extracts jared@cognition.ai
+        """
+        f = first_name.lower().strip()
+        l = last_name.lower().strip()
+        d = domain.lower().strip()
+
+        if not f or f in ["unknown", "contact"]:
+            return None
+
+        queries = [
+            f'"{f} {l}" "{d}" email',
+            f'"{f}" "@{d}"'
+        ]
+
+        pattern_regex = re.compile(r'([a-zA-Z0-9._%+-]+@' + re.escape(d) + r')', re.IGNORECASE)
+
+        for query in queries:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=3))
+                    for r in results:
+                        text = f"{r.get('title', '')} {r.get('body', '')}"
+                        matches = pattern_regex.findall(text)
+                        for email in matches:
+                            email_lower = email.lower()
+                            # Check if email belongs to target executive (contains first name or flast)
+                            if f in email_lower or (l and l in email_lower):
+                                return email_lower
+            except Exception:
+                pass
+        return None
+
     def detect_domain_pattern(self, domain: str) -> Optional[str]:
         """
         Mines public SERPs to discover actual email patterns used by domain.
@@ -53,7 +88,7 @@ class EmailVerifier:
         return None
 
     def generate_permutations(self, first_name: str, last_name: str, domain: str, detected_pattern: Optional[str] = None) -> List[str]:
-        """Generates corporate email pattern permutations ordered by detected domain pattern."""
+        """Generates corporate email pattern permutations ordered by detected domain pattern & persona."""
         f = first_name.lower().strip()
         l = last_name.lower().strip()
         d = domain.lower().strip()
@@ -62,30 +97,39 @@ class EmailVerifier:
         if not f or f in ["unknown", "contact"]:
             return [f"cto@{d}", f"contact@{d}", f"jobs@{d}", f"info@{d}", f"hello@{d}"]
 
-        pattern_map = {
-            "first.last": f"{f}.{l}@{d}",
-            "flast": f"{f[0]}{l}@{d}",
-            "first": f"{f}@{d}",
-            "first.l": f"{f}.{l[0]}@{d}",
-            "firstl": f"{f}{l[0]}@{d}",
-            "firstlast": f"{f}{l}@{d}"
-        }
-
         permutations = []
 
-        # If domain pattern was mined, prioritize it as Candidate #1!
-        if detected_pattern and detected_pattern in pattern_map:
-            permutations.append(pattern_map[detected_pattern])
-
         if f and l:
+            f_init = f[0]
+            l_init = l[0] if len(l) > 0 else ""
+
+            pattern_map = {
+                "first.last": f"{f}.{l}@{d}",
+                "flast": f"{f_init}{l}@{d}",
+                "first": f"{f}@{d}",
+                "first.l": f"{f}.{l_init}@{d}" if l_init else f"{f}@{d}",
+                "firstl": f"{f}{l_init}@{d}" if l_init else f"{f}@{d}",
+                "firstlast": f"{f}{l}@{d}"
+            }
+
+            # If domain pattern was mined, prioritize it as Candidate #1!
+            if detected_pattern and detected_pattern in pattern_map:
+                permutations.append(pattern_map[detected_pattern])
+
+            # For tech/AI startups (.ai, .io, .dev), prioritize single first name (e.g. jared@cognition.ai)
+            if d.endswith('.ai') or d.endswith('.io') or d.endswith('.dev') or d.endswith('.app'):
+                permutations.append(f"{f}@{d}")
+
             permutations.extend([
-                f"{f[0]}{l}@{d}",      # flast (e.g. ashrivastava@ocrolus.com)
-                f"{f}.{l}@{d}",      # first.last (e.g. ajay.shrivastava@ocrolus.com)
-                f"{f}@{d}",         # first
-                f"{f}.{l[0]}@{d}",    # first.l
-                f"{f}{l}@{d}",       # firstlast
-                f"{f}{l[0]}@{d}"     # firstl
+                f"{f_init}{l}@{d}",      # flast (e.g. ashrivastava@ocrolus.com)
+                f"{f}@{d}",              # first (e.g. jared@cognition.ai)
+                f"{f}.{l}@{d}",          # first.last
+                f"{f}{l}@{d}"            # firstlast
             ])
+            if l_init:
+                permutations.append(f"{f}.{l_init}@{d}")
+                permutations.append(f"{f}{l_init}@{d}")
+
         elif f:
             permutations.append(f"{f}@{d}")
 
@@ -138,10 +182,23 @@ class EmailVerifier:
             return (candidate_emails[0], "PATTERN_PREDICTED")
 
     def find_best_email(self, full_name: str, domain: str) -> Dict[str, str]:
-        """Complete workflow: Name + Domain -> Pattern Mining -> Verified Email & Status."""
+        """Complete workflow: Direct Executive Dorking -> Pattern Mining -> SMTP Validation."""
         first, last = self.split_name(full_name)
+
+        # Layer 1: Executive Direct Email Dorking
+        direct_email = self.search_executive_direct_email(first, last, domain)
+        if direct_email:
+            return {
+                "email": direct_email,
+                "verification_status": "EXPLICIT_SERP_FIND",
+                "all_candidates": direct_email
+            }
+
+        # Layer 2: Domain Pattern Discovery & Persona Classification
         pattern = self.detect_domain_pattern(domain)
         candidates = self.generate_permutations(first, last, domain, detected_pattern=pattern)
+        
+        # Layer 3: SMTP Validation
         best_email, status = self.verify_smtp(domain, candidates)
 
         return {
