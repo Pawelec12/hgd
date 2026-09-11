@@ -5,6 +5,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from ats_lead_finder.ats_scraper import ATSScraper
 from ats_lead_finder.executive_finder import ExecutiveFinder

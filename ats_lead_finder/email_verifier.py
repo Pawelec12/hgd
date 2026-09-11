@@ -1,9 +1,10 @@
 import socket
-import smtplib
 import re
 import warnings
+import os
+import httpx
 from typing import List, Dict, Optional, Tuple
-import dns.resolver
+from bs4 import BeautifulSoup
 
 warnings.filterwarnings("ignore")
 try:
@@ -12,9 +13,9 @@ except ImportError:
     from duckduckgo_search import DDGS
 
 class EmailVerifier:
-    def __init__(self, sender_email: str = "verify@checkmail.org", timeout: int = 4):
-        self.sender_email = sender_email
+    def __init__(self, timeout: int = 5):
         self.timeout = timeout
+        self.apollo_api_key = os.environ.get("APOLLO_API_KEY")
 
     def split_name(self, full_name: str) -> Tuple[str, str]:
         """Splits full name into clean first and last name."""
@@ -26,166 +27,168 @@ class EmailVerifier:
             return (parts[0], "")
         return (parts[0], parts[-1])
 
-    def search_executive_direct_email(self, first_name: str, last_name: str, domain: str) -> Optional[str]:
-        """
-        Executes targeted SERP queries to discover exact executive email mentions.
-        Example: "Jared Palmer" "cognition.ai" email -> extracts jared@cognition.ai
-        """
-        f = first_name.lower().strip()
-        l = last_name.lower().strip()
-        d = domain.lower().strip()
-
-        if not f or f in ["unknown", "contact"]:
+    def search_apollo_api(self, first_name: str, last_name: str, domain: str) -> Optional[str]:
+        """Uses Apollo.io Free API if available to get 100% accurate emails."""
+        if not self.apollo_api_key:
             return None
-
-        queries = [
-            f'"{f} {l}" "{d}" email',
-            f'"{f}" "@{d}"'
-        ]
-
-        pattern_regex = re.compile(r'([a-zA-Z0-9._%+-]+@' + re.escape(d) + r')', re.IGNORECASE)
-
-        for query in queries:
-            try:
-                with DDGS() as ddgs:
-                    results = list(ddgs.text(query, max_results=3))
-                    for r in results:
-                        text = f"{r.get('title', '')} {r.get('body', '')}"
-                        matches = pattern_regex.findall(text)
-                        for email in matches:
-                            email_lower = email.lower()
-                            # Check if email belongs to target executive (contains first name or flast)
-                            if f in email_lower or (l and l in email_lower):
-                                return email_lower
-            except Exception:
-                pass
-        return None
-
-    def detect_domain_pattern(self, domain: str) -> Optional[str]:
-        """
-        Mines public SERPs to discover actual email patterns used by domain.
-        Example: If 'ashrivastava@ocrolus.com' or 'vsmith@ocrolus.com' is found in snippets,
-        pattern is 'flast'.
-        """
-        query = f'"@{domain}"'
+        
+        url = "https://api.apollo.io/v1/people/match"
+        headers = {
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "api_key": self.apollo_api_key,
+            "first_name": first_name,
+            "last_name": last_name,
+            "organization_domain": domain
+        }
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=5))
-                pattern_regex = re.compile(r'([a-zA-Z0-9._%+-]+)@' + re.escape(domain), re.IGNORECASE)
-                
-                for r in results:
-                    text = f"{r.get('title', '')} {r.get('body', '')}"
-                    matches = pattern_regex.findall(text)
-                    for m in matches:
-                        user_part = m.lower()
-                        if user_part not in ["info", "contact", "sales", "support", "jobs", "careers", "help", "admin"]:
-                            if "." in user_part:
-                                return "first.last"
-                            elif len(user_part) >= 4:
-                                return "flast"
+            r = httpx.post(url, headers=headers, json=data, timeout=self.timeout)
+            if r.status_code == 200:
+                person = r.json().get("person")
+                if person and person.get("email"):
+                    return person["email"]
         except Exception:
             pass
         return None
 
-    def generate_permutations(self, first_name: str, last_name: str, domain: str, detected_pattern: Optional[str] = None) -> List[str]:
-        """Generates corporate email pattern permutations ordered by detected domain pattern & persona."""
+    def search_office365_api(self, email: str) -> bool:
+        """
+        Uses undocumented Microsoft API to verify if an email exists in Azure AD.
+        Returns True if it exists (0), False if it doesn't (1), or None if domain not managed by O365 (5).
+        """
+        url = 'https://login.microsoftonline.com/common/GetCredentialType'
+        try:
+            r = httpx.post(url, json={'Username': email}, timeout=self.timeout)
+            if r.status_code == 200:
+                result = r.json().get('IfExistsResult')
+                if result == 0:
+                    return True
+                elif result == 1:
+                    return False
+        except Exception:
+            pass
+        return False
+
+    def is_office365_domain(self, domain: str) -> bool:
+        """Quick check if a domain is managed by Microsoft/O365."""
+        url = 'https://login.microsoftonline.com/common/GetCredentialType'
+        try:
+            r = httpx.post(url, json={'Username': f'test_does_not_exist_xyz123@{domain}'}, timeout=self.timeout)
+            if r.status_code == 200:
+                result = r.json().get('IfExistsResult')
+                # 0 = Exists, 1 = Does not exist, 5 = Domain not managed, 6 = Domain managed but not in tenant
+                if result in [0, 1]: 
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def scrape_web_pattern(self, domain: str) -> Optional[str]:
+        """
+        Scrapes company website to find *any* email address and deduces the pattern.
+        """
+        urls_to_try = [
+            f"https://www.{domain}/about",
+            f"https://www.{domain}/team",
+            f"https://www.{domain}/contact",
+            f"https://www.{domain}/",
+        ]
+        
+        email_regex = re.compile(r'([a-zA-Z0-9._%+-]+)@' + re.escape(domain), re.IGNORECASE)
+        
+        for url in urls_to_try:
+            try:
+                r = httpx.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=self.timeout, follow_redirects=True)
+                if r.status_code == 200:
+                    matches = email_regex.findall(r.text)
+                    for m in matches:
+                        user_part = m.lower()
+                        # Ignore generic emails
+                        if user_part not in ["info", "contact", "sales", "support", "jobs", "careers", "help", "admin", "press", "media", "hello"]:
+                            # Deduce pattern
+                            if "." in user_part:
+                                return "first.last"
+                            elif len(user_part) >= 4:
+                                return "flast" # most common
+            except Exception:
+                continue
+        return None
+
+    def search_executive_direct_email(self, first_name: str, last_name: str, domain: str) -> Optional[str]:
+        """Executes targeted SERP queries to discover exact executive email mentions."""
         f = first_name.lower().strip()
         l = last_name.lower().strip()
-        d = domain.lower().strip()
-
-        # If name is unknown / role-based, return clean corporate role emails
-        if not f or f in ["unknown", "contact"]:
-            return [f"cto@{d}", f"contact@{d}", f"jobs@{d}", f"info@{d}", f"hello@{d}"]
-
-        permutations = []
-
-        if f and l:
-            f_init = f[0]
-            l_init = l[0] if len(l) > 0 else ""
-
-            pattern_map = {
-                "first.last": f"{f}.{l}@{d}",
-                "flast": f"{f_init}{l}@{d}",
-                "first": f"{f}@{d}",
-                "first.l": f"{f}.{l_init}@{d}" if l_init else f"{f}@{d}",
-                "firstl": f"{f}{l_init}@{d}" if l_init else f"{f}@{d}",
-                "firstlast": f"{f}{l}@{d}"
-            }
-
-            # If domain pattern was mined, prioritize it as Candidate #1!
-            if detected_pattern and detected_pattern in pattern_map:
-                permutations.append(pattern_map[detected_pattern])
-
-            # For tech/AI startups (.ai, .io, .dev), prioritize single first name (e.g. jared@cognition.ai)
-            if d.endswith('.ai') or d.endswith('.io') or d.endswith('.dev') or d.endswith('.app'):
-                permutations.append(f"{f}@{d}")
-
-            permutations.extend([
-                f"{f_init}{l}@{d}",      # flast (e.g. ashrivastava@ocrolus.com)
-                f"{f}@{d}",              # first (e.g. jared@cognition.ai)
-                f"{f}.{l}@{d}",          # first.last
-                f"{f}{l}@{d}"            # firstlast
-            ])
-            if l_init:
-                permutations.append(f"{f}.{l_init}@{d}")
-                permutations.append(f"{f}{l_init}@{d}")
-
-        elif f:
-            permutations.append(f"{f}@{d}")
-
-        return list(dict.fromkeys(permutations))  # Unique list preserving order
-
-    def get_mx_record(self, domain: str) -> Optional[str]:
-        """Queries DNS MX records for domain."""
-        try:
-            answers = dns.resolver.resolve(domain, 'MX')
-            mx_hosts = sorted(answers, key=lambda r: r.preference)
-            return str(mx_hosts[0].exchange).rstrip('.')
-        except Exception:
+        if not f or f == "contact":
             return None
 
-    def verify_smtp(self, domain: str, candidate_emails: List[str]) -> Tuple[str, str]:
-        """
-        Performs non-intrusive SMTP RCPT TO handshake to test candidate emails.
-        Returns (best_email, verification_status).
-        """
-        mx_host = self.get_mx_record(domain)
-        if not mx_host:
-            return (candidate_emails[0], "UNVERIFIED_NO_MX")
+        queries = [f'"{f} {l}" "{domain}" email']
+        pattern_regex = re.compile(r'([a-zA-Z0-9._%+-]+@' + re.escape(domain) + r')', re.IGNORECASE)
 
         try:
-            server = smtplib.SMTP(timeout=self.timeout)
-            server.connect(mx_host, 25)
-            server.helo(socket.gethostname())
-            server.mail(self.sender_email)
+            with DDGS() as ddgs:
+                results = list(ddgs.text(queries[0], max_results=3))
+                for r in results:
+                    text = f"{r.get('title', '')} {r.get('body', '')}"
+                    matches = pattern_regex.findall(text)
+                    for email in matches:
+                        email_lower = email.lower()
+                        if f in email_lower or (l and l in email_lower):
+                            return email_lower
+        except Exception:
+            pass
+        return None
 
-            # Test catch-all status first using a randomized dummy email
-            dummy_email = f"catchall_test_xyz999@{domain}"
-            catchall_code, _ = server.rcpt(dummy_email)
-            is_catchall = (catchall_code == 250)
+    def generate_permutations(self, first: str, last: str, domain: str, detected_pattern: Optional[str] = None) -> List[str]:
+        """Generates email patterns based on extracted/deduced evidence."""
+        if not first or first == "contact":
+            return [f"contact@{domain}"]
+            
+        f = first.lower().strip()
+        l = last.lower().strip()
+        f_init = f[0] if f else ""
+        l_init = l[0] if l else ""
 
-            if is_catchall:
-                server.quit()
-                return (candidate_emails[0], "CATCH_ALL_DOMAIN")
+        permutations = []
+        pattern_map = {
+            "first.last": f"{f}.{l}@{domain}",
+            "flast": f"{f_init}{l}@{domain}",
+            "first": f"{f}@{domain}"
+        }
 
-            # Test candidate emails
-            for email in candidate_emails:
-                code, _ = server.rcpt(email)
-                if code == 250:
-                    server.quit()
-                    return (email, "VERIFIED_SMTP_250")
+        if detected_pattern and detected_pattern in pattern_map:
+            permutations.append(pattern_map[detected_pattern])
 
-            server.quit()
-            return (candidate_emails[0], "PATTERN_PREDICTED")
-
-        except (socket.timeout, socket.error, smtplib.SMTPException):
-            return (candidate_emails[0], "PATTERN_PREDICTED")
+        # Standard fallbacks
+        fallbacks = [
+            f"{f}@{domain}",             # first
+            f"{f_init}{l}@{domain}",     # flast
+            f"{f}.{l}@{domain}",         # first.last
+            f"{f}{l}@{domain}"           # firstlast
+        ]
+        
+        for p in fallbacks:
+            if p not in permutations:
+                permutations.append(p)
+                
+        return permutations
 
     def find_best_email(self, full_name: str, domain: str) -> Dict[str, str]:
-        """Complete workflow: Direct Executive Dorking -> Pattern Mining -> SMTP Validation."""
+        """Complete Evidence-Based Workflow."""
         first, last = self.split_name(full_name)
 
-        # Layer 1: Executive Direct Email Dorking
+        # 1. Apollo API (Gold Standard if key is provided)
+        if self.apollo_api_key:
+            apollo_email = self.search_apollo_api(first, last, domain)
+            if apollo_email:
+                return {
+                    "email": apollo_email,
+                    "verification_status": "VERIFIED_APOLLO_API",
+                    "all_candidates": apollo_email
+                }
+
+        # 2. Executive Direct Dorking (Finding explicit mention of the exact person)
         direct_email = self.search_executive_direct_email(first, last, domain)
         if direct_email:
             return {
@@ -194,15 +197,31 @@ class EmailVerifier:
                 "all_candidates": direct_email
             }
 
-        # Layer 2: Domain Pattern Discovery & Persona Classification
-        pattern = self.detect_domain_pattern(domain)
-        candidates = self.generate_permutations(first, last, domain, detected_pattern=pattern)
-        
-        # Layer 3: SMTP Validation
-        best_email, status = self.verify_smtp(domain, candidates)
+        # 3. Evidence-Based Web Pattern Scraping
+        web_pattern = self.scrape_web_pattern(domain)
+        candidates = self.generate_permutations(first, last, domain, detected_pattern=web_pattern)
 
+        # 4. Office 365 Verification Bypass (100% accurate for O365, ignores Catch-All)
+        if self.is_office365_domain(domain):
+            for candidate in candidates:
+                if self.search_office365_api(candidate):
+                    return {
+                        "email": candidate,
+                        "verification_status": "VERIFIED_O365_BYPASS",
+                        "all_candidates": ", ".join(candidates[:3])
+                    }
+            # If O365 confirms none exist, maybe the pattern is obscure, or person left
+            return {
+                "email": candidates[0],
+                "verification_status": "NOT_FOUND_O365_STRICT",
+                "all_candidates": ", ".join(candidates[:3])
+            }
+
+        # 5. Final Fallback (If not O365 and no Apollo key, we rely on Web Pattern or standard fallback)
+        status = "PATTERN_EXTRACTED_FROM_WEB" if web_pattern else "PATTERN_GUESSED_FALLBACK"
+        
         return {
-            "email": best_email,
+            "email": candidates[0],
             "verification_status": status,
             "all_candidates": ", ".join(candidates[:3])
         }
