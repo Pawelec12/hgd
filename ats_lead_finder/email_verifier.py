@@ -198,12 +198,12 @@ class EmailVerifier:
                 if pattern_map[detected_pattern] not in permutations:
                     permutations.append(pattern_map[detected_pattern])
 
-            # Standard fallbacks
+            # Standard fallbacks (Ordered by global statistical probability)
             fallbacks = [
-                f"{f}@{domain}",             # first
-                f"{f_init}{last}@{domain}",  # flast
-                f"{f}.{last}@{domain}",      # first.last
-                f"{f}{last}@{domain}"        # firstlast
+                f"{f}.{last}@{domain}",      # 1. first.last (Most common globally)
+                f"{f}@{domain}",             # 2. first (Common in tech/startups)
+                f"{f_init}{last}@{domain}",  # 3. flast
+                f"{f}{last}@{domain}"        # 4. firstlast
             ]
             
             for p in fallbacks:
