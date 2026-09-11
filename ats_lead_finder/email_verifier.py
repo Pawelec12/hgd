@@ -12,6 +12,34 @@ try:
 except ImportError:
     from duckduckgo_search import DDGS
 
+NICKNAMES = {
+    "robert": ["bob", "rob"],
+    "elizabeth": ["liz", "beth", "betty"],
+    "william": ["will", "bill"],
+    "michael": ["mike"],
+    "matthew": ["matt"],
+    "christopher": ["chris"],
+    "daniel": ["dan"],
+    "thomas": ["tom"],
+    "david": ["dave"],
+    "richard": ["rick", "dick"],
+    "joseph": ["joe"],
+    "charles": ["charlie", "chuck"],
+    "james": ["jim"],
+    "alexander": ["alex"],
+    "nicholas": ["nick"],
+    "stephen": ["steve"],
+    "steven": ["steve"],
+    "andrew": ["andy"],
+    "jonathan": ["jon"],
+    "joshua": ["josh"],
+    "samuel": ["sam"],
+    "benjamin": ["ben"],
+    "timothy": ["tim"],
+    "edward": ["ed"],
+    "patrick": ["pat"]
+}
+
 class EmailVerifier:
     def __init__(self, timeout: int = 5):
         self.timeout = timeout
@@ -94,6 +122,7 @@ class EmailVerifier:
             f"https://www.{domain}/team",
             f"https://www.{domain}/contact",
             f"https://www.{domain}/",
+            f"https://crt.sh/?q=%.{domain}&output=json"
         ]
         
         email_regex = re.compile(r'([a-zA-Z0-9._%+-]+)@' + re.escape(domain), re.IGNORECASE)
@@ -102,11 +131,12 @@ class EmailVerifier:
             try:
                 r = httpx.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=self.timeout, follow_redirects=True)
                 if r.status_code == 200:
-                    matches = email_regex.findall(r.text)
+                    text = str(r.json()) if 'crt.sh' in url else r.text
+                    matches = email_regex.findall(text)
                     for m in matches:
                         user_part = m.lower()
                         # Ignore generic emails
-                        if user_part not in ["info", "contact", "sales", "support", "jobs", "careers", "help", "admin", "press", "media", "hello"]:
+                        if user_part not in ["info", "contact", "sales", "support", "jobs", "careers", "help", "admin", "press", "media", "hello", "hostmaster", "postmaster", "webmaster"]:
                             # Deduce pattern
                             if "." in user_part:
                                 return "first.last"
@@ -141,36 +171,44 @@ class EmailVerifier:
         return None
 
     def generate_permutations(self, first: str, last: str, domain: str, detected_pattern: Optional[str] = None) -> List[str]:
-        """Generates email patterns based on extracted/deduced evidence."""
+        """Generates email patterns based on extracted/deduced evidence, expanding nicknames."""
         if not first or first == "contact":
             return [f"contact@{domain}"]
             
-        f = first.lower().strip()
-        l = last.lower().strip()
-        f_init = f[0] if f else ""
-        l_init = l[0] if l else ""
+        first = first.lower().strip()
+        last = last.lower().strip()
+        l_init = last[0] if last else ""
+
+        # Build list of names to try (original first + nicknames)
+        first_names = [first]
+        if first in NICKNAMES:
+            first_names.extend(NICKNAMES[first])
 
         permutations = []
-        pattern_map = {
-            "first.last": f"{f}.{l}@{domain}",
-            "flast": f"{f_init}{l}@{domain}",
-            "first": f"{f}@{domain}"
-        }
-
-        if detected_pattern and detected_pattern in pattern_map:
-            permutations.append(pattern_map[detected_pattern])
-
-        # Standard fallbacks
-        fallbacks = [
-            f"{f}@{domain}",             # first
-            f"{f_init}{l}@{domain}",     # flast
-            f"{f}.{l}@{domain}",         # first.last
-            f"{f}{l}@{domain}"           # firstlast
-        ]
         
-        for p in fallbacks:
-            if p not in permutations:
-                permutations.append(p)
+        for f in first_names:
+            f_init = f[0] if f else ""
+            pattern_map = {
+                "first.last": f"{f}.{last}@{domain}",
+                "flast": f"{f_init}{last}@{domain}",
+                "first": f"{f}@{domain}"
+            }
+
+            if detected_pattern and detected_pattern in pattern_map:
+                if pattern_map[detected_pattern] not in permutations:
+                    permutations.append(pattern_map[detected_pattern])
+
+            # Standard fallbacks
+            fallbacks = [
+                f"{f}@{domain}",             # first
+                f"{f_init}{last}@{domain}",  # flast
+                f"{f}.{last}@{domain}",      # first.last
+                f"{f}{last}@{domain}"        # firstlast
+            ]
+            
+            for p in fallbacks:
+                if p not in permutations:
+                    permutations.append(p)
                 
         return permutations
 
